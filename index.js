@@ -145,6 +145,21 @@ app.post(
   })
 );
 
+// 7) GET /borrows  logged in user's borrows
+app.get(
+  "/borrows",
+  verifyJWT,
+  wrap(async (req, res) => {
+    const list = await borrows
+      .find({ userEmail: req.user.email })
+      .sort({ borrowDate: -1 })
+      .toArray();
+    res.send(list);
+  })
+);
+
+
+
 /* ------------------------------ misc ------------------------------- */
 
 app.get("/", (req, res) => res.send("BookNook server is running"));
