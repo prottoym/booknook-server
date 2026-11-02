@@ -65,7 +65,7 @@ async function verifyJWT(req, res, next) {
 
 /* ---------------------------- BOOK routes -------------------------- */
 
-// 1) GET /books  (public)  ?sort=newest|oldest &limit=6 &email= &category= &search=
+// 1) GET /books  (public)  sort=newest|oldest &limit=6 &email= &category= &search=
 app.get(
   "/books",
   wrap(async (req, res) => {
@@ -85,10 +85,136 @@ app.get(
   })
 );
 
+// 2) GET /books/:id  
+app.get(
+  "/books/:id",
+  wrap(async (req, res) => {
+    const _id = toId(req.params.id);
+    if (!_id) return res.status(400).send({ message: "Invalid book id" });
+
+    const book = await books.findOne({ _id });
+    if (!book) return res.status(404).send({ message: "Book not found" });
+
+    res.send(book);
+  })
+);
+
+// 3) POST /books  
+app.post(
+  "/books",
+  verifyJWT,
+  wrap(async (req, res) => {
+    const { title, author, category, image, description, totalCopies } = req.body;
+
+    if (!title?.trim() || !author?.trim() || !description?.trim() || !image) {
+      return res.status(400).send({ message: "Please fill in all the fields" });
+    }
+    if (!CATEGORIES.includes(category)) {
+      return res.status(400).send({ message: "Please choose a valid category" });
+    }
+    const copies = Number(totalCopies);
+    if (!Number.isInteger(copies) || copies < 1) {
+      return res.status(400).send({ message: "Total copies must be 1 or more" });
+    }
+
+    const doc = {
+      title: title.trim(),
+      author: author.trim(),
+      category,
+      image,
+      description: description.trim(),
+      totalCopies: copies,
+      availableCopies: copies,
+      userName: req.user.name, // always taken from the token, never from the body
+      userEmail: req.user.email,
+      createdAt: new Date(),
+    };
+
+    const result = await books.insertOne(doc);
+    res.status(201).send({ ...doc, _id: result.insertedId });
+  })
+);
+
+// 4) PATCH /books/:id  
+app.patch(
+  "/books/:id",
+  verifyJWT,
+  wrap(async (req, res) => {
+    const _id = toId(req.params.id);
+    if (!_id) return res.status(400).send({ message: "Invalid book id" });
+
+    const book = await books.findOne({ _id });
+    if (!book) return res.status(404).send({ message: "Book not found" });
+    if (book.userEmail !== req.user.email) {
+      return res.status(403).send({ message: "You can only edit your own books" });
+    }
+
+    const { title, author, category, image, description, totalCopies } = req.body;
+    const updates = {};
+
+    if (title !== undefined) {
+      if (!title.trim()) return res.status(400).send({ message: "Title can't be empty" });
+      updates.title = title.trim();
+    }
+    if (author !== undefined) {
+      if (!author.trim()) return res.status(400).send({ message: "Author can't be empty" });
+      updates.author = author.trim();
+    }
+    if (category !== undefined) {
+      if (!CATEGORIES.includes(category)) {
+        return res.status(400).send({ message: "Please choose a valid category" });
+      }
+      updates.category = category;
+    }
+    if (image !== undefined) updates.image = image;
+    if (description !== undefined) {
+      if (!description.trim()) {
+        return res.status(400).send({ message: "Description can't be empty" });
+      }
+      updates.description = description.trim();
+    }
+    if (totalCopies !== undefined) {
+      const copies = Number(totalCopies);
+      if (!Number.isInteger(copies) || copies < 1) {
+        return res.status(400).send({ message: "Total copies must be 1 or more" });
+      }
+      // keep available Copies 
+      const diff = copies - book.totalCopies;
+      updates.totalCopies = copies;
+      updates.availableCopies = Math.max(0, book.availableCopies + diff);
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).send({ message: "Nothing to update" });
+    }
+
+    await books.updateOne({ _id }, { $set: updates });
+    res.send({ message: "Book updated", book: { ...book, ...updates } });
+  })
+);
+
+// 5) DELETE /books/:id  
+app.delete(
+  "/books/:id",
+  verifyJWT,
+  wrap(async (req, res) => {
+    const _id = toId(req.params.id);
+    if (!_id) return res.status(400).send({ message: "Invalid book id" });
+
+    const book = await books.findOne({ _id });
+    if (!book) return res.status(404).send({ message: "Book not found" });
+    if (book.userEmail !== req.user.email) {
+      return res.status(403).send({ message: "You can only delete your own books" });
+    }
+
+    await books.deleteOne({ _id });
+    res.send({ message: "Book deleted" });
+  })
+);
 
 /* --------------------------- BORROW routes ------------------------- */
 
-// 6) POST /borrows  (JWT)  body: { bookId, returnDate }
+// 6) POST /borrows body: { bookId, returnDate }
 app.post(
   "/borrows",
   verifyJWT,
@@ -112,7 +238,7 @@ app.post(
       return res.status(409).send({ message: "You have already borrowed this book" });
     }
 
-    // Take one copy ($inc -1) only if a copy is still available
+    // Take one copy. if a copy still available
     const reserve = await books.updateOne(
       { _id, availableCopies: { $gt: 0 } },
       { $inc: { availableCopies: -1 } }
@@ -145,7 +271,7 @@ app.post(
   })
 );
 
-// 7) GET /borrows logged in user's borrows
+// 7) GET /borrows  logged in user's borrows
 app.get(
   "/borrows",
   verifyJWT,
