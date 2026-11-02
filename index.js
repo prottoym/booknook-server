@@ -36,6 +36,89 @@ const toId = (id) => (/^[a-f\d]{24}$/i.test(String(id)) ? new ObjectId(String(id
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 
+/* ---------------------------- BOOK routes -------------------------- */
+
+// 1) GET /books  (public)  ?sort=newest|oldest &limit=6 &email= &category= &search=
+app.get(
+  "/books",
+  wrap(async (req, res) => {
+    const { sort = "newest", limit, email, category, search } = req.query;
+
+    const filter = {};
+    if (email) filter.userEmail = String(email);
+    if (category) filter.category = String(category);
+    if (search) filter.title = { $regex: escapeRegex(String(search)), $options: "i" };
+
+    let cursor = books.find(filter).sort({ createdAt: sort === "oldest" ? 1 : -1 });
+
+    const n = parseInt(limit, 10);
+    if (n > 0) cursor = cursor.limit(Math.min(n, 100));
+
+    res.send(await cursor.toArray());
+  })
+);
+
+
+/* --------------------------- BORROW routes ------------------------- */
+
+// 6) POST /borrows  (JWT)  body: { bookId, returnDate }
+app.post(
+  "/borrows",
+  verifyJWT,
+  wrap(async (req, res) => {
+    const { bookId, returnDate } = req.body;
+
+    const _id = toId(bookId);
+    if (!_id) return res.status(400).send({ message: "Invalid book id" });
+
+    const returnOn = new Date(returnDate);
+    if (Number.isNaN(returnOn.getTime()) || returnOn <= new Date()) {
+      return res.status(400).send({ message: "Please pick a return date in the future" });
+    }
+
+    const book = await books.findOne({ _id });
+    if (!book) return res.status(404).send({ message: "Book not found" });
+
+    // No double borrow
+    const already = await borrows.findOne({ bookId: String(_id), userEmail: req.user.email });
+    if (already) {
+      return res.status(409).send({ message: "You have already borrowed this book" });
+    }
+
+    // Take one copy ($inc -1) only if a copy is still available
+    const reserve = await books.updateOne(
+      { _id, availableCopies: { $gt: 0 } },
+      { $inc: { availableCopies: -1 } }
+    );
+    if (reserve.modifiedCount === 0) {
+      return res.status(409).send({ message: "Sorry, this book is not available right now" });
+    }
+
+    const doc = {
+      bookId: String(_id),
+      bookTitle: book.title,
+      bookImage: book.image,
+      userName: req.user.name,
+      userEmail: req.user.email,
+      borrowDate: new Date(),
+      returnDate: returnOn,
+    };
+
+    try {
+      const result = await borrows.insertOne(doc);
+      res.status(201).send({ ...doc, _id: result.insertedId });
+    } catch (error) {
+      // give the copy back if saving the borrow failed
+      await books.updateOne({ _id }, { $inc: { availableCopies: 1 } });
+      if (error.code === 11000) {
+        return res.status(409).send({ message: "You have already borrowed this book" });
+      }
+      throw error;
+    }
+  })
+);
+
+
 
 async function start() {
   await client.connect();
