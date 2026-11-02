@@ -145,7 +145,7 @@ app.post(
   })
 );
 
-// 7) GET /borrows  logged in user's borrows
+// 7) GET /borrows logged in user's borrows
 app.get(
   "/borrows",
   verifyJWT,
@@ -158,7 +158,31 @@ app.get(
   })
 );
 
+// 8) DELETE /borrows/:id  return a book
+app.delete(
+  "/borrows/:id",
+  verifyJWT,
+  wrap(async (req, res) => {
+    const _id = toId(req.params.id);
+    if (!_id) return res.status(400).send({ message: "Invalid borrow id" });
 
+    const borrow = await borrows.findOne({ _id });
+    if (!borrow) return res.status(404).send({ message: "Borrow record not found" });
+    if (borrow.userEmail !== req.user.email) {
+      return res.status(403).send({ message: "This is not your borrow" });
+    }
+
+    await borrows.deleteOne({ _id });
+
+    // copy goes back on the shelf ($inc +1)
+    const bookObjectId = toId(borrow.bookId);
+    if (bookObjectId) {
+      await books.updateOne({ _id: bookObjectId }, { $inc: { availableCopies: 1 } });
+    }
+
+    res.send({ message: "Book returned" });
+  })
+);
 
 /* ------------------------------ misc ------------------------------- */
 
