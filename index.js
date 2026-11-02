@@ -35,6 +35,33 @@ const toId = (id) => (/^[a-f\d]{24}$/i.test(String(id)) ? new ObjectId(String(id
 
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/* ------------------------- JWT verification ------------------------ */
+// BetterAuth (jwt plugin) publishes its public keys at /api/auth/jwks
+const JWKS = createRemoteJWKSet(new URL(`${AUTH_URL}/api/auth/jwks`));
+
+async function verifyJWT(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized: please log in first" });
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS, { issuer: AUTH_URL });
+    if (!payload.email) throw new Error("Token has no email");
+
+    req.user = {
+      id: payload.id || payload.sub,
+      email: payload.email,
+      name: payload.name || "Reader",
+    };
+    next();
+  } catch (error) {
+    console.error("JWT check failed:", error.message);
+    return res.status(401).send({ message: "Unauthorized: invalid or expired token" });
+  }
+}
 
 /* ---------------------------- BOOK routes -------------------------- */
 
@@ -118,7 +145,17 @@ app.post(
   })
 );
 
+/* ------------------------------ misc ------------------------------- */
 
+app.get("/", (req, res) => res.send("BookNook server is running"));
+
+app.use((req, res) => res.status(404).send({ message: "Route not found" }));
+
+// eslint-disable-next-line no-unused-vars
+app.use((error, req, res, next) => {
+  console.error(error);
+  res.status(500).send({ message: "Something went wrong on the server" });
+});
 
 async function start() {
   await client.connect();
